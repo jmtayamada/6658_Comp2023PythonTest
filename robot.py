@@ -5,10 +5,10 @@ import ctre
 import navx
 import numpy as np
 
+
 seconds = 0
 
 c_ArmLiftTotalValue = 540
-
 c_ArmExtendMaxValue = 100
 
 class Robot(wpilib.TimedRobot):

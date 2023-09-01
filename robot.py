@@ -5,6 +5,7 @@ import ctre
 import navx
 import numpy as np
 
+
 seconds = 0
 
 c_ArmLiftTotalValue = 540

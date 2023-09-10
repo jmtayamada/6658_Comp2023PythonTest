@@ -4,6 +4,8 @@ import wpimath.controller
 import ctre
 import navx
 import numpy as np
+from wpilib.shuffleboard import Shuffleboard
+import wpilib.shuffleboard
 
 
 seconds = 0
@@ -17,16 +19,19 @@ class Robot(wpilib.TimedRobot):
     def __init__(self, period: seconds = 0.02) -> None:
         super().__init__(period)
 
+        # Camera
+        wpilib.CameraServer.launch()
+
         # Create four motors for driving, put them in a list for PID control in autonomouse
-        self.MotorFL = ctre.WPI_TalonSRX(1)
-        self.MotorFR = ctre.WPI_TalonSRX(2)
-        self.MotorBL = ctre.WPI_TalonSRX(3)
-        self.MotorBR = ctre.WPI_TalonSRX(4)
+        self.MotorFL = ctre.WPI_TalonSRX(5)
+        self.MotorFR = ctre.WPI_TalonSRX(3)
+        self.MotorBL = ctre.WPI_TalonSRX(0)
+        self.MotorBR = ctre.WPI_TalonSRX(6)
         self.DriveMotors = [self.MotorFL, self.MotorFR, self.MotorBL, self.MotorBR]
 
         # Create two motors to control the arms
-        self.ArmLift = ctre.WPI_TalonSRX(5)
-        self.ArmExtend = ctre.WPI_TalonSRX(6)
+        self.ArmLift = ctre.WPI_TalonSRX(1)
+        self.ArmExtend = ctre.WPI_TalonSRX(4)
 
         # Differential Drives to control wheel motors in teleop
         self.frontDrive = wpilib.drive.DifferentialDrive(self.MotorFL, self.MotorFR)
@@ -40,13 +45,31 @@ class Robot(wpilib.TimedRobot):
         self.ArmLiftEncoder.setDistancePerPulse(25/4)       # 25 distance per 4 pulses
 
         # Joysticks
-        self.DriveStick = wpilib.Joystick(0)
+        self.DriveStick = wpilib.Joystick(1)
         self.HelperStick = wpilib.XboxController(3)
 
+        # Shuffleboard values for PID
+        self.PIDArmLiftTest = (
+            Shuffleboard.getTab("Configuration")
+            .add(title="PIDArmLift", defaultValue=1)
+            .withWidget(wpilib.shuffleboard.BuiltInWidgets.kPIDController)
+            .withPosition(0, 0)
+            .withSize(2, 1)
+            .getEntry()
+        )
+        self.PIDArmExtendTest = (
+            Shuffleboard.getTab("Configuration")
+            .add(title="PIDArmExtend", defaultValue=1)
+            .withWidget(wpilib.shuffleboard.BuiltInWidgets.kPIDController)
+            .withPosition(0, 1)
+            .withSize(2, 1)
+            .getEntry()
+        )
+
         # PID controllers for arm lift and arm extension
-        self.PIDArmLift = wpimath.controller.PIDController(1, 0, 1)
+        self.PIDArmLift = wpimath.controller.PIDController(self.PIDLiftPValue, 0, 0)
         self.PIDArmLift.setTolerance(5)
-        self.PIDArmExtend = wpimath.controller.PIDController(1, 0, 1)
+        self.PIDArmExtend = wpimath.controller.PIDController(.0625, 0, 0)
         self.PIDArmExtend.setTolerance(2)
 
         # Double solenoid for arm grabbing
@@ -194,6 +217,14 @@ class Robot(wpilib.TimedRobot):
                 self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kReverse)
             else:
                 self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kForward)
+
+        # for PID tuning
+        if self.HelperStick.getYButtonPressed():
+            self.PIDArmLift.setP(self.PIDArmLift.getP()*2)
+            print(self.PIDArmLift.getP())
+        if self.HelperStick.getAButtonPressed():
+            self.PIDArmLift.set(self.PIDArmLift.getP() * 2)
+            print(self.PIDArmLift.getP())
 
         # set previousTime variable to the current time, so that delta time can be gotten on the next loop
         self.previousTime = self.timer.get()

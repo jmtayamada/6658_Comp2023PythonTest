@@ -24,13 +24,16 @@ class Robot(wpilib.TimedRobot):
 
         # Create four motors for driving, put them in a list for PID control in autonomouse
         self.MotorFL = ctre.WPI_TalonSRX(5)
+        self.MotorFL.setInverted(True)
         self.MotorFR = ctre.WPI_TalonSRX(3)
         self.MotorBL = ctre.WPI_TalonSRX(0)
+        self.MotorBL.setInverted(True)
         self.MotorBR = ctre.WPI_TalonSRX(6)
         self.DriveMotors = [self.MotorFL, self.MotorFR, self.MotorBL, self.MotorBR]
 
         # Create two motors to control the arms
         self.ArmLift = ctre.WPI_TalonSRX(1)
+        self.ArmLift.setInverted(True)
         self.ArmExtend = ctre.WPI_TalonSRX(4)
 
         # Differential Drives to control wheel motors in teleop
@@ -46,34 +49,34 @@ class Robot(wpilib.TimedRobot):
 
         # Joysticks
         self.DriveStick = wpilib.Joystick(1)
-        self.HelperStick = wpilib.XboxController(3)
+        self.HelperStick = wpilib.XboxController(0)
 
-        # Shuffleboard values for PID
-        self.PIDArmLiftTest = (
-            Shuffleboard.getTab("Configuration")
-            .add(title="PIDArmLift", defaultValue=1)
-            .withWidget(wpilib.shuffleboard.BuiltInWidgets.kPIDController)
-            .withPosition(0, 0)
-            .withSize(2, 1)
-            .getEntry()
-        )
-        self.PIDArmExtendTest = (
-            Shuffleboard.getTab("Configuration")
-            .add(title="PIDArmExtend", defaultValue=1)
-            .withWidget(wpilib.shuffleboard.BuiltInWidgets.kPIDController)
-            .withPosition(0, 1)
-            .withSize(2, 1)
-            .getEntry()
-        )
+        # # Shuffleboard values for PID
+        # self.PIDArmLiftTest = (
+        #     Shuffleboard.getTab("Configuration")
+        #     .add(title="PIDArmLift", defaultValue=1)
+        #     .withWidget(wpilib.shuffleboard.BuiltInWidgets.kPIDController)
+        #     .withPosition(0, 0)
+        #     .withSize(2, 1)
+        #     .getEntry()
+        # )
+        # self.PIDArmExtendTest = (
+        #     Shuffleboard.getTab("Configuration")
+        #     .add(title="PIDArmExtend", defaultValue=1)
+        #     .withWidget(wpilib.shuffleboard.BuiltInWidgets.kPIDController)
+        #     .withPosition(0, 1)
+        #     .withSize(2, 1)
+        #     .getEntry()
+        # )
 
         # PID controllers for arm lift and arm extension
-        self.PIDArmLift = wpimath.controller.PIDController(self.PIDLiftPValue, 0, 0)
+        self.PIDArmLift = wpimath.controller.PIDController(.0625, 0, 0)
         self.PIDArmLift.setTolerance(5)
         self.PIDArmExtend = wpimath.controller.PIDController(.0625, 0, 0)
         self.PIDArmExtend.setTolerance(2)
 
         # Double solenoid for arm grabbing
-        self.ArmGrab = wpilib.DoubleSolenoid(wpilib.PneumaticsModuleType.CTREPCM, 0, 1)
+        self.ArmGrab = wpilib.DoubleSolenoid(wpilib.PneumaticsModuleType.CTREPCM, 2, 3)
 
         # PID controller for balancing the robot
         self.PIDBalance = wpimath.controller.PIDController(1, 0, 1)
@@ -84,6 +87,9 @@ class Robot(wpilib.TimedRobot):
 
         # timer for timing, and getting delta time
         self.timer = wpilib.Timer()
+
+        # variable to keep track of arm
+        self.ArmOpened = False #kForward to close, kReverse to open
 
         # constants
         self.liftTargetAngle = 0        # Target angle for Arm lift
@@ -115,6 +121,8 @@ class Robot(wpilib.TimedRobot):
         self.ArmLiftEncoder.reset()
         self.ArmExtendEncoder.reset()
         self.autonomousePhaseNum = 1
+        self.ArmOpened = False
+        self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kForward)
 
 
     def autonomousPeriodic(self) -> None:
@@ -177,6 +185,8 @@ class Robot(wpilib.TimedRobot):
         self.timer.start()
         self.ArmLiftEncoder.reset()
         self.ArmExtendEncoder.reset()
+        self.ArmOpened = False
+        self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kForward)
 
 
     def teleopPeriodic(self) -> None:
@@ -190,41 +200,47 @@ class Robot(wpilib.TimedRobot):
 
         # change arm lift target angle based on joystick input + clamp the value
         self.liftTargetAngle = np.clip(
-            self.HelperStick.getLeftY() * c_ArmLiftTotalValue * self.DeltaTime() + self.liftTargetAngle, 
+            -self.HelperStick.getLeftY() * c_ArmLiftTotalValue * self.DeltaTime() + self.liftTargetAngle, 
             0, 
             c_ArmLiftTotalValue
         )
         # PID to calculate output
-        t_ArmLiftMotorPower = self.PIDArmLift.calculate(self.getArmLiftEncoderValue(), self.liftTargetAngle)
+        t_ArmLiftMotorPower = np.clip(
+            self.PIDArmLift.calculate(self.getArmLiftEncoderValue(), self.liftTargetAngle),
+            -1,
+            1
+        )
         # if moving the arm up, go normal speed, if moving down, set half speed
         if t_ArmLiftMotorPower > 0:
-            self.ArmLift.set(t_ArmLiftMotorPower)
+            self.ArmLift.set(t_ArmLiftMotorPower/4)
         else:
-            self.ArmLift.set(t_ArmLiftMotorPower/2)
+            self.ArmLift.set(t_ArmLiftMotorPower/8)
 
-        # change arm extend distance based on joystick input + clamp the value
-        self.extendTargetAngle = np.clip(
-            self.HelperStick.getRightY() * c_ArmExtendMaxValue * self.DeltaTime()/2 + self.extendTargetAngle,
-            0,
-            c_ArmExtendMaxValue
-        )
-        # pid to calclate the motor power
-        self.ArmExtend.set(self.PIDArmLift.calculate(self.getArmExtendEncoderValue(), self.extendTargetAngle))
+        # # change arm extend distance based on joystick input + clamp the value
+        # self.extendTargetAngle = np.clip(
+        #     self.HelperStick.getRightY() * c_ArmExtendMaxValue * self.DeltaTime()/2 + self.extendTargetAngle,
+        #     0,
+        #     c_ArmExtendMaxValue
+        # )
+        # # pid to calclate the motor power
+        # self.ArmExtend.set(self.PIDArmLift.calculate(self.getArmExtendEncoderValue(), self.extendTargetAngle))
 
         # if x button pressed, reverse direction of solenoid
         if self.HelperStick.getXButtonPressed():
-            if self.ArmGrab.get():
-                self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kReverse)
-            else:
+            if self.ArmOpened:
                 self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kForward)
+                self.ArmOpened = False
+            else:
+                self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kReverse)
+                self.ArmOpened = True
 
-        # for PID tuning
-        if self.HelperStick.getYButtonPressed():
-            self.PIDArmLift.setP(self.PIDArmLift.getP()*2)
-            print(self.PIDArmLift.getP())
-        if self.HelperStick.getAButtonPressed():
-            self.PIDArmLift.set(self.PIDArmLift.getP() * 2)
-            print(self.PIDArmLift.getP())
+        # # for PID tuning
+        # if self.HelperStick.getYButtonPressed():
+        #     self.PIDArmLift.setP(self.PIDArmLift.getP()*2)
+        #     print(self.PIDArmLift.getP())
+        # if self.HelperStick.getAButtonPressed():
+        #     self.PIDArmLift.set(self.PIDArmLift.getP() / 2)
+        #     print(self.PIDArmLift.getP())
 
         # set previousTime variable to the current time, so that delta time can be gotten on the next loop
         self.previousTime = self.timer.get()

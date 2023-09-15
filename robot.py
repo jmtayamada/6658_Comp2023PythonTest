@@ -4,9 +4,7 @@ import wpimath.controller
 import ctre
 import navx
 import numpy as np
-from wpilib.shuffleboard import Shuffleboard
-import wpilib.shuffleboard
-
+from wpilib import SmartDashboard
 
 seconds = 0
 
@@ -210,6 +208,9 @@ class Robot(wpilib.TimedRobot):
             -1,
             1
         )
+        SmartDashboard.putNumber("TargetAngle", self.liftTargetAngle)
+        SmartDashboard.putNumber("CurrentAngle", self.getArmLiftEncoderValue())
+        SmartDashboard.putNumber("MotorPower", t_ArmLiftMotorPower)
         # if moving the arm up, go normal speed, if moving down, set half speed
         if t_ArmLiftMotorPower > 0:
             self.ArmLift.set(t_ArmLiftMotorPower/4)

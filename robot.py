@@ -5,12 +5,17 @@ import ctre
 import navx
 import numpy as np
 from wpilib import SmartDashboard
+import math
 
 seconds = 0
 
-c_ArmLiftTotalValue = 540       # Constant for max value ArmLift encoder should ever go to
+c_ArmLiftTotalValue = 4096*.5       # Constant for max value ArmLift encoder should ever go to
 c_ArmExtendMaxValue = 100       # Constant for max value ArmExtend encoder should ever go to
 c_gyroMountAngle = 45           # Constant for what angle the gyro is mounted at
+
+c_ticksPerDegree = 4096 * 3 / 360   # Constant for converting encoder values to degrees
+c_measuredHorizontalArmPosition = -2233 # The position measured when the arm is horizontal
+c_gravityPower = 1                  # The power to the motor required to hold the arm straight at horizontal position
 
 class Robot(wpilib.TimedRobot):
     
@@ -42,33 +47,12 @@ class Robot(wpilib.TimedRobot):
         self.ArmExtendEncoder = wpilib.Encoder(0, 1)
         self.ArmExtendEncoder.setDistancePerPulse(180/4)    # 180 distance per 4 pulses
 
-        self.ArmLiftEncoder = wpilib.Encoder(2, 3)
-        self.ArmLiftEncoder.setDistancePerPulse(25/4)       # 25 distance per 4 pulses
-
         # Joysticks
-        self.DriveStick = wpilib.Joystick(1)
-        self.HelperStick = wpilib.XboxController(0)
-
-        # # Shuffleboard values for PID
-        # self.PIDArmLiftTest = (
-        #     Shuffleboard.getTab("Configuration")
-        #     .add(title="PIDArmLift", defaultValue=1)
-        #     .withWidget(wpilib.shuffleboard.BuiltInWidgets.kPIDController)
-        #     .withPosition(0, 0)
-        #     .withSize(2, 1)
-        #     .getEntry()
-        # )
-        # self.PIDArmExtendTest = (
-        #     Shuffleboard.getTab("Configuration")
-        #     .add(title="PIDArmExtend", defaultValue=1)
-        #     .withWidget(wpilib.shuffleboard.BuiltInWidgets.kPIDController)
-        #     .withPosition(0, 1)
-        #     .withSize(2, 1)
-        #     .getEntry()
-        # )
+        self.DriveStick = wpilib.Joystick(0)
+        self.HelperStick = wpilib.XboxController(1)
 
         # PID controllers for arm lift and arm extension
-        self.PIDArmLift = wpimath.controller.PIDController(.0625, 0, 0)
+        self.PIDArmLift = wpimath.controller.PIDController(.0025, 0, 0)
         self.PIDArmLift.setTolerance(5)
         self.PIDArmExtend = wpimath.controller.PIDController(.0625, 0, 0)
         self.PIDArmExtend.setTolerance(2)
@@ -104,7 +88,7 @@ class Robot(wpilib.TimedRobot):
     
     def getArmLiftEncoderValue(self):
         # function to get clamped values of arm lift encoder (for when the arm lift encoders return values to high or too low)
-        return float(np.clip(self.ArmLiftEncoder.get(), 0, c_ArmLiftTotalValue))
+        return float(np.clip(self.ArmLift.getSelectedSensorPosition(), 0, c_ArmLiftTotalValue))
     
     
     def getArmExtendEncoderValue(self):
@@ -116,7 +100,7 @@ class Robot(wpilib.TimedRobot):
         # reset all used variables
         self.timer.reset()
         self.timer.start()
-        self.ArmLiftEncoder.reset()
+        self.ArmLift.setSelectedSensorPosition(0)
         self.ArmExtendEncoder.reset()
         self.autonomousePhaseNum = 1
         self.ArmOpened = False
@@ -181,10 +165,12 @@ class Robot(wpilib.TimedRobot):
         self.previousTime = 0
         self.timer.reset()
         self.timer.start()
-        self.ArmLiftEncoder.reset()
+        self.liftTargetAngle = 0
+        self.ArmLift.setSelectedSensorPosition(0)
         self.ArmExtendEncoder.reset()
         self.ArmOpened = False
         self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kForward)
+        self.ArmExtendEncoder.reset()
 
 
     def teleopPeriodic(self) -> None:
@@ -192,39 +178,30 @@ class Robot(wpilib.TimedRobot):
         t_zangle = self.DriveStick.getRawAxis(2)
         t_xangle = self.DriveStick.getRawAxis(0)
         t_finalangle = t_zangle/2 + t_xangle/2
+        
         # get y and w values, multiply together for forward/reverse/speed control, and pass the previous values into arcade drive
         self.frontDrive.arcadeDrive(self.DriveStick.getRawAxis(1) * self.DriveStick.getRawAxis(3), t_finalangle, True)
         self.backDrive.arcadeDrive(self.DriveStick.getRawAxis(1) * self.DriveStick.getRawAxis(3), t_finalangle, True)
 
         # change arm lift target angle based on joystick input + clamp the value
-        self.liftTargetAngle = np.clip(
-            -self.HelperStick.getLeftY() * c_ArmLiftTotalValue * self.DeltaTime() + self.liftTargetAngle, 
-            0, 
-            c_ArmLiftTotalValue
-        )
-        # PID to calculate output
-        t_ArmLiftMotorPower = np.clip(
-            self.PIDArmLift.calculate(self.getArmLiftEncoderValue(), self.liftTargetAngle),
-            -1,
-            1
-        )
+        self.liftTargetAngle -= (-self.HelperStick.getRawAxis(1) * c_ArmLiftTotalValue * self.DeltaTime())
+        self.liftTargetAngle = np.clip(self.liftTargetAngle, -c_ArmLiftTotalValue, 0)
         SmartDashboard.putNumber("TargetAngle", self.liftTargetAngle)
-        SmartDashboard.putNumber("CurrentAngle", self.getArmLiftEncoderValue())
-        SmartDashboard.putNumber("MotorPower", t_ArmLiftMotorPower)
-        # if moving the arm up, go normal speed, if moving down, set half speed
-        if t_ArmLiftMotorPower > 0:
-            self.ArmLift.set(t_ArmLiftMotorPower/4)
-        else:
-            self.ArmLift.set(t_ArmLiftMotorPower/8)
 
-        # # change arm extend distance based on joystick input + clamp the value
-        # self.extendTargetAngle = np.clip(
-        #     self.HelperStick.getRightY() * c_ArmExtendMaxValue * self.DeltaTime()/2 + self.extendTargetAngle,
-        #     0,
-        #     c_ArmExtendMaxValue
-        # )
-        # # pid to calclate the motor power
-        # self.ArmExtend.set(self.PIDArmLift.calculate(self.getArmExtendEncoderValue(), self.extendTargetAngle))
+        currentpos = self.ArmLift.getSelectedSensorPosition()
+        degrees = (currentpos - c_measuredHorizontalArmPosition) / c_ticksPerDegree
+        radians = math.radians(degrees)
+        cosineScale = math.cos(radians)
+
+        SmartDashboard.putNumber("CurrentAngle", self.ArmLift.getSelectedSensorPosition())
+        outputValue = np.clip(self.PIDArmLift.calculate(self.ArmLift.getSelectedSensorPosition(), self.liftTargetAngle), -1, 1)
+        SmartDashboard.putNumber("OutputValue", outputValue)
+        SmartDashboard.putNumber("CosineScale", cosineScale)
+        self.ArmLift.set(ctre.ControlMode.PercentOutput, -outputValue + .63*cosineScale)
+
+        SmartDashboard.putNumber("ArmOutputTesting", self.ArmLift.getMotorOutputVoltage())
+
+        # self.ArmLift.set(ctre.ControlMode.MotionMagic, self.liftTargetAngle, ctre.DemandType.Neutral, 0)   # c_gravityPower*cosineScale
 
         # if x button pressed, reverse direction of solenoid
         if self.HelperStick.getXButtonPressed():
@@ -235,16 +212,29 @@ class Robot(wpilib.TimedRobot):
                 self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kReverse)
                 self.ArmOpened = True
 
-        # # for PID tuning
-        # if self.HelperStick.getYButtonPressed():
-        #     self.PIDArmLift.setP(self.PIDArmLift.getP()*2)
-        #     print(self.PIDArmLift.getP())
-        # if self.HelperStick.getAButtonPressed():
-        #     self.PIDArmLift.set(self.PIDArmLift.getP() / 2)
-        #     print(self.PIDArmLift.getP())
+        # 0 - -11.25
+        SmartDashboard.putNumber("Encoder Value", self.ArmExtendEncoder.get())
+        RightJoystick = self.HelperStick.getRawAxis(5)
+        if RightJoystick > .05 or RightJoystick < -.05:
+            RightJoystick = RightJoystick
+        else:
+            RightJoystick = 0
+        if self.ArmExtendEncoder.get() <= 0 or self.ArmExtendEncoder.get() >= -11.25:
+            if RightJoystick != 0:
+                self.ArmExtend.set(ctre.ControlMode.PercentOutput, (RightJoystick/abs(RightJoystick))/2)
+            else:
+                self.ArmExtend.set(ctre.ControlMode.PercentOutput, 0)
+        else:
+            self.ArmExtend.set(ctre.ControlMode.PercentOutput, 0)
 
         # set previousTime variable to the current time, so that delta time can be gotten on the next loop
         self.previousTime = self.timer.get()
+
+    def testInit(self) -> None:
+        self.ArmExtendEncoder.reset()
+
+    def testPeriodic(self) -> None:
+        pass
 
 
 if __name__ == "__main__":

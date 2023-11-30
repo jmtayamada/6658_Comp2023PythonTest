@@ -4,6 +4,8 @@ import wpimath.controller
 import ctre
 import navx
 import numpy as np
+import wpilib.interfaces
+import photonvision
 from wpilib import SmartDashboard
 import math
 
@@ -12,6 +14,7 @@ seconds = 0
 c_ArmLiftTotalValue = 4096*.5       # Constant for max value ArmLift encoder should ever go to
 c_ArmExtendMaxValue = 100       # Constant for max value ArmExtend encoder should ever go to
 c_gyroMountAngle = 45           # Constant for what angle the gyro is mounted at
+balanceMode = False
 
 c_ticksPerDegree = 4096 * 3 / 360   # Constant for converting encoder values to degrees
 c_measuredHorizontalArmPosition = -2233 # The position measured when the arm is horizontal
@@ -48,14 +51,17 @@ class Robot(wpilib.TimedRobot):
         self.ArmExtendEncoder.setDistancePerPulse(180/4)    # 180 distance per 4 pulses
 
         # Joysticks
-        self.DriveStick = wpilib.Joystick(0)
-        self.HelperStick = wpilib.XboxController(1)
+        self.DriveStick = wpilib.Joystick(1)
+        self.HelperStick = wpilib.XboxController(4)
 
         # PID controllers for arm lift and arm extension
         self.PIDArmLift = wpimath.controller.PIDController(.0025, 0, 0)
         self.PIDArmLift.setTolerance(5)
         self.PIDArmExtend = wpimath.controller.PIDController(.0625, 0, 0)
         self.PIDArmExtend.setTolerance(2)
+
+        # PID controller for auto targetting
+        self.autoTargetPID = wpimath.controller.PIDController(1, 0, 1)
 
         # Double solenoid for arm grabbing
         self.ArmGrab = wpilib.DoubleSolenoid(wpilib.PneumaticsModuleType.CTREPCM, 2, 3)
@@ -78,12 +84,19 @@ class Robot(wpilib.TimedRobot):
         self.extendTargetAngle = 0      # target angle for Arm extend
         self.previousTime = 0           # variable for use in getting delta time
 
+        # photonvision
+        self.photonCamera = photonvision.PhotonCamera("rock")
+
         self.autonomousePhaseNum = 1    # Variable to track autonomouse phase
 
 
     def DeltaTime(self):
         # function to get delta time
         return self.timer.get() - self.previousTime
+    
+
+    def disabledInit(self) -> None:
+        self.HelperStick.setRumble(wpilib.interfaces.GenericHID.RumbleType.kLeftRumble, 0)
 
     
     def getArmLiftEncoderValue(self):
@@ -108,56 +121,76 @@ class Robot(wpilib.TimedRobot):
 
 
     def autonomousPeriodic(self) -> None:
-        # phase 1, lift the arm
-        if self.autonomousePhaseNum == 1:
-            self.ArmLift.set(self.PIDArmLift.calculate(self.getArmLiftEncoderValue, 470))
-            if self.PIDArmLift.atSetpoint(self.getArmLiftEncoderValue, 470) == True:
-                self.autonomousePhaseNum == 2
-        # phase 2, extend the arm
-        if self.autonomousePhaseNum == 2:
-            self.ArmExtend.set(self.PIDArmExtend.calculate(self.getArmExtendEncoderValue, 100))
-            if self.PIDArmLift.atSetpoint(self.getArmExtendEncoderValue, 100):
-                self.timer.reset()
-                self.timer.start()
-                self.autonomousePhaseNum == 3
-        # phase 3, open arm + close arm
-        if self.autonomousePhaseNum == 3:
-            self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kReverse)
-            if self.timer.get() > 2:
-                self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kForward)
-                self.autonomousePhaseNum = 4
-        # phase 4, de-extend the arm
-        if self.autonomousePhaseNum == 4:
-            self.ArmExtend.set(self.PIDArmExtend.calculate(self.getArmExtendEncoderValue, 0))
-            if self.PIDArmLift.atSetpoint(self.getArmExtendEncoderValue, 0):
-                self.autonomousePhaseNum == 5
-        # stage 5, lower the arm
-        if self.autonomousePhaseNum == 5:
-            self.ArmLift.set(self.PIDArmLift.calculate(self.getArmLiftEncoderValue, 0))
-            if self.PIDArmLift.atSetpoint(self.getArmLiftEncoderValue, 0) == True:
-                self.timer.reset()
-                self.timer.start()
-                self.autonomousePhaseNum == 6
-        # stage 6, move backwards untill out of comunity zone, or hit the seesaw
-        if self.autonomousePhaseNum == 6:
-            for obj in self.DriveMotors:
-                obj.set(-.75)
-            if self.gyro.getPitch < c_gyroMountAngle - 5:
-                self.autonomousePhaseNum = 7
-            if self.timer.get() > 8:
+        if balanceMode:
+            # phase 1, lift the arm
+            if self.autonomousePhaseNum == 1:
+                self.ArmLift.set(self.PIDArmLift.calculate(self.getArmLiftEncoderValue, 470))
+                if self.PIDArmLift.atSetpoint(self.getArmLiftEncoderValue, 470) == True:
+                    self.autonomousePhaseNum == 2
+            # phase 2, extend the arm
+            if self.autonomousePhaseNum == 2:
+                self.ArmExtend.set(self.PIDArmExtend.calculate(self.getArmExtendEncoderValue, 100))
+                if self.PIDArmLift.atSetpoint(self.getArmExtendEncoderValue, 100):
+                    self.timer.reset()
+                    self.timer.start()
+                    self.autonomousePhaseNum == 3
+            # phase 3, open arm + close arm
+            if self.autonomousePhaseNum == 3:
+                self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kReverse)
+                if self.timer.get() > 2:
+                    self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kForward)
+                    self.autonomousePhaseNum = 4
+            # phase 4, de-extend the arm
+            if self.autonomousePhaseNum == 4:
+                self.ArmExtend.set(self.PIDArmExtend.calculate(self.getArmExtendEncoderValue, 0))
+                if self.PIDArmLift.atSetpoint(self.getArmExtendEncoderValue, 0):
+                    self.autonomousePhaseNum == 5
+            # stage 5, lower the arm
+            if self.autonomousePhaseNum == 5:
+                self.ArmLift.set(self.PIDArmLift.calculate(self.getArmLiftEncoderValue, 0))
+                if self.PIDArmLift.atSetpoint(self.getArmLiftEncoderValue, 0) == True:
+                    self.timer.reset()
+                    self.timer.start()
+                    self.autonomousePhaseNum == 6
+            # stage 6, move backwards untill out of comunity zone, or hit the seesaw
+            if self.autonomousePhaseNum == 6:
                 for obj in self.DriveMotors:
-                    obj.set(0)
-                    self.autonomousePhaseNum = 100
-        # if hit the seesaw, set speed to 1/4 untill robot reaches the top of the seesaw
-        if self.autonomousePhaseNum == 7:
-            for obj in self.DriveMotors:
-                obj.set(-.25)
-            if self.gyro.getPitch > c_gyroMountAngle - 10:
-                self.autonomousePhaseNum == 8
-        # at top of seesaw, control with PID to auto balance
-        if self.autonomousePhaseNum == 8:
-            for obj in self.DriveMotors:
-                obj.set(self.PIDBalance.calculate(self.gyro.getPitch, c_gyroMountAngle))
+                    obj.set(-.75)
+                if self.gyro.getPitch < c_gyroMountAngle - 5:
+                    self.autonomousePhaseNum = 7
+                if self.timer.get() > 8:
+                    for obj in self.DriveMotors:
+                        obj.set(0)
+                        self.autonomousePhaseNum = 100
+            # if hit the seesaw, set speed to 1/4 untill robot reaches the top of the seesaw
+            if self.autonomousePhaseNum == 7:
+                for obj in self.DriveMotors:
+                    obj.set(-.25)
+                if self.gyro.getPitch > c_gyroMountAngle - 10:
+                    self.autonomousePhaseNum == 8
+            # at top of seesaw, control with PID to auto balance
+            if self.autonomousePhaseNum == 8:
+                for obj in self.DriveMotors:
+                    obj.set(self.PIDBalance.calculate(self.gyro.getPitch, c_gyroMountAngle))
+        else:
+            data, hasResult = self.photonResultGet()
+            if self.autonomousePhaseNum == 1:
+                if hasResult == True:
+                    self.frontDrive.arcadeDrive(.5, self.autoTargetPID.calculate(data.getYaw(), 0))
+                    self.backDrive.arcadeDrive(.5, self.autoTargetPID.calculate(data.getYaw(), 0))
+                    if data.getYaw() == 0 and data.getPitch() < -5:
+                        self.autonomousePhaseNum = 2
+            if self.autonomousePhaseNum == 2:
+                self.frontDrive.arcadeDrive(0, 0)
+                self.backDrive.arcadeDrive(0, 0)
+                self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kReverse)
+
+
+    def photonResultGet(self):
+        photonData = self.photonCamera.getLatestResult()
+        photonResult = photonData.getBestTarget()
+        return photonResult, photonData.hasTargets()
+
 
 
     def teleopInit(self) -> None:
@@ -171,6 +204,7 @@ class Robot(wpilib.TimedRobot):
         self.ArmOpened = False
         self.ArmGrab.set(wpilib.DoubleSolenoid.Value.kForward)
         self.ArmExtendEncoder.reset()
+        self.HelperStick.setRumble(wpilib.interfaces.GenericHID.RumbleType.kLeftRumble, .5)
 
 
     def teleopPeriodic(self) -> None:

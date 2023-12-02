@@ -9,6 +9,7 @@ import photonvision
 from wpilib import SmartDashboard
 import math
 
+
 seconds = 0
 
 c_ArmLiftTotalValue = 4096*.5       # Constant for max value ArmLift encoder should ever go to
